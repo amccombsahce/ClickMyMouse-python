@@ -14,18 +14,20 @@ class ConfigMgr:
         self.__tcp_port = 5000
         self.__ip_address = "127.0.0.1"
 
+        self.read()
+
     def read(self):
         config = configparser.ConfigParser()
         config.read(self.filename)
-        if 'APP' in config:
-            self.__is_server = config.getboolean('APP', 'is_server', fallback=False)
-            self.__ip_address = config.get('APP', 'ip_address', fallback='')
-            self.__udp_port = config.getint('APP', 'udp_port', fallback=5005)
-            self.__tcp_port = config.getint('APP', 'tcp_port', fallback=5000)
+        if 'ClickMyMouse' in config:
+            self.__is_server = config.getboolean('ClickMyMouse', 'is_server', fallback=False)
+            self.__ip_address = config.get('ClickMyMouse', 'ip_address', fallback='')
+            self.__udp_port = config.getint('ClickMyMouse', 'udp_port', fallback=5005)
+            self.__tcp_port = config.getint('ClickMyMouse', 'tcp_port', fallback=5000)
 
     def save(self):
         config = configparser.ConfigParser()
-        config['APP'] = {
+        config['ClickMyMouse'] = {
             'is_server': str(self.__is_server),
             'ip_address': self.__ip_address,
             'udp_port': str(self.__udp_port),
