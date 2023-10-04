@@ -9,6 +9,9 @@ class MessageType(enum.Enum):
     INIT = 0x05
     KEEP_ALIVE = 0x10
 
+    INIT_REQUEST = 0x80
+    INIT_RESPONSE = 0x81
+
     MAINTENANCE_REQUEST = 0x100
     MAINTENANCE_RESPONSE = 0x101
 

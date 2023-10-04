@@ -5,11 +5,11 @@ from config_mgr import ConfigMgr
 from script_engine import ScriptEngine
 from logger import Logger
 from datetime import datetime
-from point_mgr import Point
+
 
 class ClientAttendance:
-    def __init__(self, Param_Mgr):
-        self.ParamMgr = Param_Mgr
+    def __init__(self, param_mgr):
+        self.ParamMgr = param_mgr
         self.MasterClientList = []
         self.WorkingClientList = []
 
@@ -23,7 +23,6 @@ class ClientAttendance:
 
     def clear_client_response(self):
         self.WorkingClientList.clear()
-        abcv = 1
 
     def add_client_response(self, client):
         if client not in self.WorkingClientList:
@@ -45,7 +44,6 @@ class ClientAttendance:
                 for abc_socket in self.MasterClientList:
                     if abc_socket.fileno() < 0:
                         self.del_client_attendance(abc_socket)
-                        abc_socket = None
 
         if len(self.MasterClientList) == len(self.WorkingClientList):
             return True
@@ -54,7 +52,7 @@ class ClientAttendance:
 
 
 # when we need to pass more classes around, well just add it to the class
-class Param_Mgr:
+class ParameterMgr:
     def __init__(self):
         self.NetworkMgr_stop_event = None
         self.is_server: bool = True
@@ -92,6 +90,7 @@ class Param_Mgr:
             return None
 
         # does the string exist
+
     def is_script_string(self, key):
         if key in self.script_items_string:
             return True
@@ -108,6 +107,7 @@ class Param_Mgr:
             return None
 
         # does the string exist
+
     def is_script_point(self, key):
         if key in self.script_items_point:
             return True
@@ -124,6 +124,7 @@ class Param_Mgr:
             return None
 
         # does the string exist
+
     def is_script_int(self, key):
         if key in self.script_items_int:
             return True

@@ -10,7 +10,7 @@ import pyautogui
 import vlc
 from file_mgr import FileMgr
 from message_type import *  # MessageType, TestcaseType, TestcaseMessage, TestcaseTypeData, TestcaseVariableType, R
-from point_mgr import Point
+from point_type import Point
 from wait_for_me import wait_for_me
 import subprocess
 
@@ -69,7 +69,7 @@ class ScriptEngine:
         self.ParamMgr.Logger.debug("ScriptEngine.clearscript")
         self.script.clear()
 
-    def loadscript(self, scriptfilename):
+    def load_script(self, scriptfilename):
         self.ParamMgr.Logger.debug("ScriptEngine.loadscript")
         file_mgr = FileMgr()
         script = file_mgr.ParseScriptFile(scriptfilename)
@@ -88,12 +88,13 @@ class ScriptEngine:
     def run(self):
         self.ParamMgr.Logger.debug("ScriptEngine.run")
 
+        # TODO put here if user selected Repeat test checkbox.
         self.send_maintenance_client(MessageType.MAINTENANCE_REQUEST, TestcaseType.START_TEST)
 
         self.run_script()
 
         self.send_maintenance_client(MessageType.MAINTENANCE_REQUEST, TestcaseType.STOP_TEST)
-
+        # TODO put here endif Repeat is checked
 
         self.ParamMgr.Logger.debug("ScriptEngine.run, all-done")
         self.is_run = False
@@ -106,7 +107,7 @@ class ScriptEngine:
             if self.is_run:
                 for ii in self.script:
                     while self.is_paused:
-                        time.sleep(1)
+                        time.sleep(0)
                     if self.stop_event is not None:
                         if self.stop_event.is_set():
                             break
@@ -148,6 +149,7 @@ class ScriptEngine:
                                                        step_number=stepcount,
                                                        testcase_type=testcase_type,
                                                        data=data)
+
         client_response = self.ParamMgr.client_attendance.wait_for_client_response()
 
         if not client_response:
@@ -191,7 +193,12 @@ class ScriptEngine:
             if testcase_type == TestcaseType.INIT:
                 self.ParamMgr.Logger.debug("ScriptEngine.client_maintenance_cmd.INIT")
                 abc = 1
-
+                # TODO do stuff so that we know that the client has connected
+                #
+                status_is_pass = True
+                self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.INIT_RESPONSE,
+                                                                  testcase_type=testcase_type,
+                                                                  status_is_pass=status_is_pass)
             elif testcase_type == TestcaseType.PRINT_SCN:
                 self.ParamMgr.Logger.debug("ScriptEngine.client_maintenance_cmd.PRINT_SCN")
 
@@ -1022,13 +1029,12 @@ class ScriptEngine:
             else:
                 self.ParamMgr.Logger.error(f"Error: ScriptEngine.server_runscript_cmd invalid sleep: {str(command)}")
 
-
         elif opcode == "Sound":
             self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.Sound")
-            # Sound()
+            # Sound() # default sound is "ding.wav"
             # Sound(String)
             # Sound("dingding.wav")
-            # default sound is "ding.wav"
+
             sound_data = None
 
             if len(words) > 1:  # 'filename'
@@ -1050,12 +1056,12 @@ class ScriptEngine:
             self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.PrintScn")
             # default screenshot filename is "screenshot_<datetime>.png"
 
-            printscreen_data = None
+            print_screen_data = None
 
             if len(words) > 1:
-                printscreen_data = {"filename": words[1]}
+                print_screen_data = {'filename': words[1]}
 
-            self.send_maintenance_client(MessageType.MAINTENANCE_REQUEST, TestcaseType.PRINT_SCN, data=printscreen_data)
+            self.send_maintenance_client(MessageType.MAINTENANCE_REQUEST, TestcaseType.PRINT_SCN, data=print_screen_data)
 
         elif opcode == "MouseMove":
             self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.MouseMove")
@@ -1077,7 +1083,7 @@ class ScriptEngine:
                     self.ParamMgr.Logger.error(
                         f"Error: ScriptEngine.server_runscript_cmd invalid points MoveMouse: {command}")
 
-                self.send_testcase_client(stepcount, TestcaseType.MOUSE_MOVE, data=click_data)
+                self.send_testcase_client(stepcount=stepcount, testcase_type=TestcaseType.MOUSE_MOVE, data=click_data)
             else:
                 self.ParamMgr.Logger.error(
                     f"Error: ScriptEngine.server_runscript_cmd, MoveMouse missing parameters: {command}")
@@ -1097,29 +1103,32 @@ class ScriptEngine:
                     y_value = point_a.y
                     amount_scroll = int(words[2])
 
-                elif len(words) > 3:  # if MouseScroll(x, y, scroll_amount)
-                    x_value = int(words[1])  # ok, then maybe there are digits in the script file. MouseMove(100,200)
+                elif len(words) > 2:  # if MouseScroll(x, y)
+                    x_value = int(words[1])  # ok, then maybe there are digits in the script file. MouseScroll(100,200)
                     y_value = int(words[2])
-                    amount_scroll = int(words[3])
+                    if len(words) > 3:
+                        amount_scroll = int(words[3]) # if MouseScroll(x, y, scroll_amount)
                 else:
                     self.ParamMgr.Logger.error(
                         f"Error: ScriptEngine.server_runscript_cmd invalid points MoveMouse: {command}")
 
                 if amount_scroll > 1:  # default is 1, probably can't scroll zero
-                    mousescroll_data = {'x': str(x_value), 'y': str(y_value), 'amount_to_scroll': amount_scroll}
+                    mouse_scroll_data = {'x': str(x_value), 'y': str(y_value), 'amount_to_scroll': amount_scroll}
                 else:
-                    mousescroll_data = {'x': str(x_value), 'y': str(y_value)}  # default MOUSE_SCROLL of 1
+                    mouse_scroll_data = {'x': str(x_value), 'y': str(y_value)}  # default MOUSE_SCROLL of 1
 
-                self.send_testcase_client(stepcount, TestcaseType.MOUSE_SCROLL, data=mousescroll_data)
+                self.send_testcase_client(stepcount, TestcaseType.MOUSE_SCROLL, data=mouse_scroll_data)
             else:
                 self.ParamMgr.Logger.error(
                     f"Error: ScriptEngine.server_runscript_cmd, MoveMouse missing parameters: {command}")
 
         elif opcode == "MouseDown":
             self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.MouseDown")
+            self.ParamMgr.Logger.error("MouseDown not implemented")
             abc = 1
         elif opcode == "MouseUp":
             self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.MouseUp")
+            self.ParamMgr.Logger.error("MouseUp not implemented")
             abc = 1
         elif opcode == "MouseGetPos":
             # MouseGetPos()  just log the position
@@ -1370,7 +1379,6 @@ class ScriptEngine:
 
 
             self.send_testcase_client(stepcount, TestcaseType.KEYBOARD_HOTPRESS, data=keyboard_data)
-
 
         elif opcode == "WaitForInLogFile":
             # WaitForInLogFile(filename, texttofind)
