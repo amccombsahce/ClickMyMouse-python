@@ -8,30 +8,30 @@ class ConfigMgr:
 
     def __init__(self, filename='ClickMyMouse.config'):
         self.filename = filename
-        self.__app_config = 'app.config'
-        self.__is_server = False
-        self.__udp_port = 5005
-        self.__tcp_port = 5000
+        self.__app_config = 'ClickMyMouse.config'
         self.__ip_address = "127.0.0.1"
+        self.__is_server = False
+        self.__tcp_port = 5000
+        self.__udp_port = 5005
 
         self.read()
 
     def read(self):
         config = configparser.ConfigParser()
         config.read(self.filename)
-        if 'ClickMyMouse' in config:
-            self.__is_server = config.getboolean('ClickMyMouse', 'is_server', fallback=False)
-            self.__ip_address = config.get('ClickMyMouse', 'ip_address', fallback='')
-            self.__udp_port = config.getint('ClickMyMouse', 'udp_port', fallback=5005)
-            self.__tcp_port = config.getint('ClickMyMouse', 'tcp_port', fallback=5000)
+        if 'network' in config:
+            self.__ip_address = config.get('network', 'ip_address', fallback=self.__is_server)
+            self.__is_server = config.getboolean('network', 'is_server', fallback=self.__is_server)
+            self.__tcp_port = config.getint('network', 'tcp_port', fallback=self.__tcp_port)
+            self.__udp_port = config.getint('network', 'udp_port', fallback=self.__udp_port)
 
     def save(self):
         config = configparser.ConfigParser()
-        config['ClickMyMouse'] = {
-            'is_server': str(self.__is_server),
+        config['network'] = {
             'ip_address': self.__ip_address,
-            'udp_port': str(self.__udp_port),
-            'tcp_port': str(self.__tcp_port)
+            'is_server': str(self.__is_server),
+            'tcp_port': str(self.__tcp_port),
+            'udp_port': str(self.__udp_port)
         }
         with open(self.filename, 'w') as f:
             config.write(f)

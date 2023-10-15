@@ -5,6 +5,12 @@ import enum
 from datetime import datetime
 
 
+class ResponseStatus(enum.IntEnum):
+    FAIL = 0x00
+    PASS = 0x01
+    NONE = 0x02  # for when we did not start with start_test, reply with none
+
+
 class MessageType(enum.Enum):
     INIT = 0x05
     KEEP_ALIVE = 0x10
@@ -23,10 +29,14 @@ class MessageType(enum.Enum):
 
 
 class TestcaseType(enum.Enum):
-    INIT = 0x5
+    INIT = 0x5  # should this be READY , this is sent to server after tcp connection back from socket
 
-    START_TEST = 0x10
-    STOP_TEST = 0x11
+    INT = 0x06
+    STRING = 0x07
+    POINT = 0x08
+
+    START_TEST = 0x10  # Simon says do this
+    STOP_TEST = 0x11  # print test results
     ROLL_LOGS = 0x12  # server and client rolls log files
     PRINT_SCN = 0x13  # take a screenshot
     GET_DATETIME = 0x14
@@ -34,6 +44,9 @@ class TestcaseType(enum.Enum):
     LOG = 0x16  # clients will log
     SLEEP = 0x17  # seconds to sleep, need to send to client??
     MEM_USAGE = 0x18
+
+    SEND_FILE = 0x20  # send a file to the clients for findonscreen
+    READ_COM_PORT = 0x21
 
     RUN_SCRIPT = 0x40  # runs a subscript, need to send to client??
     #    RETURN = 22  # return from script after complete , need to send to client??
@@ -74,9 +87,16 @@ class TestcaseType(enum.Enum):
     MOVE_FILE = 0x105
     DEL_FILE = 0x106
 
+    GET_FILE_FROM_SERVER = 0x108  # when client doesn't have the file, get the file from the server
+    FILE_TRANSFER_FROM_SERVER = 0x109  # the server will send packets of the file
+
+    IMG_GET_POS = 0x110  # pyautogui.locateOnScreen
+
     VALIDATE_XML_FILE = 0x300
     UNINSTALL_WINDOWS_APPLICATION = 0x400
     CREATE_SHORTCUT_FILE = 0x401  # create windows .lnk file
+
+    END = 0xFFFF
 
 
 class TestcaseVariableType(enum.Enum):
@@ -87,15 +107,20 @@ class TestcaseVariableType(enum.Enum):
 
 
 class TestcaseTypeData(enum.Enum):
+    # trying to make the: #if DEBUG like in C
     debug = 1
 
+    # in the network messages, there is a data section. we use names to set information in data
+    # but this data is in text, thus it is very long. If we could just use a number system
+    # like message_type is, then that will make the tcp packet smaller and faster performance
+    # But: let's just test one to see if it really does make a difference
     @property
-    def DATA_SOUND(self):
-        return 'filename' if self.debug else '12'  # using same numbers as TestcaseType
+    def FILENAME(self):
+        return 'filename' if self.debug else '12'
 
     @property
     def MOUSE_SCROLL(self):
-        return 'amount_to_scroll' if self.debug else '43'  # using same numbers as TestcaseType
+        return 'amount_to_scroll' if self.debug else '43'
 
 
 class Message:
@@ -117,6 +142,9 @@ class Message:
         json_decode = json.loads(json_bytes.decode('utf-8'))
         return cls(MessageType(json_decode['message_type']))
 
+    def to_str(self) -> str:
+        return f"Message(message_type={self.message_type})"
+
 
 class KeepAliveMessage(Message):
     def __init__(self):
@@ -134,6 +162,10 @@ class KeepAliveMessage(Message):
     def decode(cls, json_bytes):
         data_object = json.loads(json_bytes.decode('utf-8'))
         return data_object
+
+    def to_str(self) -> str:
+        abc = f"Message(message_type={self.message_type}), time={self.time}"
+        return abc
 
 
 class TestcaseVariableTypeMessage(Message):
@@ -177,6 +209,11 @@ class MaintenanceMessage(Message):
         status_is_pass = data_object['status_is_pass']
 
         return cls(message_type=message_type, testcase_type=testcase_type, data=data, status_is_pass=status_is_pass)
+
+    def to_str(self) -> str:
+        abc = (f"Message(message_type={self.message_type}), testcase_type={self.message_type}, "
+               f"testcase_type={self.testcase_type}, data={self.data}, status={self.status_is_pass}")
+        return abc
 
 
 class TestcaseMessage(Message):  # stepnumber=0, stepaction=0)

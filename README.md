@@ -17,3 +17,7 @@ KeyboardUp
 KeyboardHotPress
 
 Wait for text to be written in a log file
+
+TODO add pyautogui.locateOnScreen()
+https://pyautogui.readthedocs.io/en/latest/screenshot.html
+button7location = pyautogui.locateOnScreen('calc7key.png')

@@ -24,6 +24,7 @@ class UDPPortHandler:
         self.sockSender.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         self.sockReceiver = None
+        self.my_address = None
 
         print(f"udp_port: {str(self.udp_port)}, server_tcp_port: {str(server_tcp_port)}")
 
@@ -32,31 +33,35 @@ class UDPPortHandler:
         #     self.sockReceiver.bind(('0.0.0.0', self.udp_port))
 
     def send_message(self, message):
+        sock_info = self.sockSender.getsockname()
+        self.my_address = str(sock_info)
         sent_bytes = self.sockSender.sendto(message.encode(), (self.host, self.udp_port))
-        print(f"sent {str(message)}, {str(sent_bytes)} bytes, {str(self.sockSender.getsockname())}")
+        print(f"udp sent {str(message)}, {str(sent_bytes)} bytes, {str(self.sockSender.getsockname())}\n")
 
     def receive_message(self):
         self.sockReceiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if self.sockReceiver is None:
             print(f"Error with socket()")
+
         is_connected = False
         while not is_connected:
             try:
                 self.sockReceiver.bind(('0.0.0.0', self.udp_port))
                 is_connected = True
-                print(f"Successful Bind")
+                print(f"Successful Bind to udp port: {str(self.udp_port)}")
             except Exception as e:
-                print(f"Exception Error: {str(e)}")
+                print(f"Exception Error, bind: {str(e)}")
                 time.sleep(1)
 
         while True:
             try:
                 data, addr = self.sockReceiver.recvfrom(1024)
                 response = data.decode()
-                print(f"receive_message from: {str(addr)}, message: {str(response)}")
+                print(f"receive_message from: {str(addr)}, message: {str(response)}\n")
 
                 if "PORT_REQUEST" in response:
                     if self.server_tcp_port != 0:
+                        print(f"port response is: {str(self.server_tcp_port)}")
                         response_message = f"PORT_RESPONSE: ({str(self.server_tcp_port)})"
                         self.send_message(response_message)
                     else:
