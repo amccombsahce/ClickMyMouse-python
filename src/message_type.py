@@ -1,14 +1,18 @@
+import os
+import hashlib
 import json
-from enum import Enum
-import struct
 import enum
 from datetime import datetime
+import pickle
 
 
 class ResponseStatus(enum.IntEnum):
-    FAIL = 0x00
+    NONE = 0x00
     PASS = 0x01
-    NONE = 0x02  # for when we did not start with start_test, reply with none
+    FAIL = 0x02
+    AWAY = 0x03  # reply with this for when we did not start with start_test
+    ERRR = 0x40  # Error occurred
+    EERR = 0x80  # Exception Error occurred
 
 
 class MessageType(enum.Enum):
@@ -35,6 +39,7 @@ class TestcaseType(enum.Enum):
     STRING = 0x07
     POINT = 0x08
 
+    SIMON_STOP = 0x09
     START_TEST = 0x10  # Simon says do this
     STOP_TEST = 0x11  # print test results
     ROLL_LOGS = 0x12  # server and client rolls log files
@@ -87,8 +92,8 @@ class TestcaseType(enum.Enum):
     MOVE_FILE = 0x105
     DEL_FILE = 0x106
 
-    GET_FILE_FROM_SERVER = 0x108  # when client doesn't have the file, get the file from the server
-    FILE_TRANSFER_FROM_SERVER = 0x109  # the server will send packets of the file
+    GET_FILE_FROM_SERVER = 0x108  # test FILE_TRANSFER_FROM_SERVER
+    FILE_TRANSFER_FROM_SERVER = 0x109  # when client doesn't have the file, get the file from the server, the server will send packets of the file
 
     IMG_GET_POS = 0x110  # pyautogui.locateOnScreen
 
@@ -132,15 +137,25 @@ class Message:
 
     def encode(self):
         try:
-            # return json.dumps(self.__dict__, default=lambda x: x.value).encode('utf-8')
             return json.dumps(self.__dict__, default=lambda x: x.value).encode('utf-8')
+            # return json.dumps(self, default=self.serialize).encode('utf-8')
         except KeyError as e:
             print(f"Error, Message.encode : {str(e)}")
+
+    def serialize(self, obj):
+        a = self.message_type  # shut up about being static
+        if isinstance(obj, Message):
+            return {
+                "message_type": obj.message_type.value  # Serialize the enum value
+            }
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
     @classmethod
     def decode(cls, json_bytes):
         json_decode = json.loads(json_bytes.decode('utf-8'))
         return cls(MessageType(json_decode['message_type']))
+
+
 
     def to_str(self) -> str:
         return f"Message(message_type={self.message_type})"
@@ -179,46 +194,93 @@ class TestcaseVariableTypeMessage(Message):
         self.testcase_variable_type = testcase_variable_type
         self.data = data
 
+    def serialize(self, obj):
+        if isinstance(obj, Message):
+            return {
+                "message_type": obj.message_type.value,
+                "testcase_variable_type": obj.testcase_variable_type.value,
+                "data": obj.data
+            }
+        # Handle other non-serializable types here
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
     @classmethod
     def decode(cls, json_bytes):
         data_object = json.loads(json_bytes.decode('utf-8'))
         message_type = MessageType(data_object['message_type'])
         testcase_variable_type = TestcaseVariableType(data_object['testcase_variable_type'])
-        abc_data = data_object['data']
+        data = data_object['data']
 
-        return cls(message_type=message_type, testcase_variable_type=testcase_variable_type, data=abc_data)
+        return cls(message_type=message_type, testcase_variable_type=testcase_variable_type, data=data)
+
+    def to_str(self) -> str:
+        abc = (f"Message(message_type={self.message_type}), testcase_type={self.message_type}, "
+               f"testcase_variable_type={self.testcase_variable_type}, abc_data={self.data}")
+        return abc
 
 
 class MaintenanceMessage(Message):
     def __init__(self, message_type: MessageType = MessageType.INIT, step_number=0,
-                 testcase_type: TestcaseType = TestcaseType.INIT, status_is_pass=False, data=None):
+                 testcase_type: TestcaseType = TestcaseType.INIT, status_is_pass=ResponseStatus.NONE, data=None):
         super().__init__(message_type)
         if not isinstance(testcase_type, TestcaseType):
             raise ValueError(
-                'ValueError, MaintenanceMessage, MessageType.TestcaseMessage, TestcaseType Enum')
+                'ValueError, MaintenanceMessage, testcase_type, TestcaseType Enum')
+        if not isinstance(status_is_pass, ResponseStatus):
+            raise ValueError(
+                'ValueError, MaintenanceMessage, status_is_pass, ResponseStatus Enum')
+
         self.testcase_type = testcase_type
         self.status_is_pass = status_is_pass
         self.data = data  # for extra information, such as filename for PrintScreen
 
+    def serialize(self, obj):
+        if isinstance(obj, Message):
+            return {
+                "message_type": obj.message_type.value,
+                "testcase_type": obj.testcase_type.value,
+                "status_is_pass": obj.status_is_pass.value,
+                "data": obj.data
+            }
+        # Handle other non-serializable types here
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
     @classmethod
     def decode(cls, json_bytes):
-        data_object = json.loads(json_bytes.decode('utf-8'))
-        message_type = MessageType(data_object['message_type'])
-        testcase_type = TestcaseType(data_object['testcase_type'])
-        data = data_object['data']
-        status_is_pass = data_object['status_is_pass']
+        try:
+            data_object = json.loads(json_bytes.decode('utf-8'))
+            message_type = MessageType(data_object['message_type'])
+            testcase_type = TestcaseType(data_object['testcase_type'])
+            status_is_pass = ResponseStatus(data_object['status_is_pass'])
+            data = data_object['data']
+
+        except Exception as e:
+            print(f"Error, Message.decode: {str(e)}")
 
         return cls(message_type=message_type, testcase_type=testcase_type, data=data, status_is_pass=status_is_pass)
 
+    @classmethod
+    def decode_new(cls, json_bytes):
+        try:
+            json_str = json_bytes.decode('utf-8')
+            data_object = json.loads(json_str)
+            message = cls()
+            message.message_type = MessageType(data_object.get("message_type"))
+            message.testcase_type = TestcaseType(data_object.get("testcase_type"))
+            message.status_is_pass = ResponseStatus(data_object.get("status_is_pass"))
+            message.data = data_object.get("data")
+            return message
+        except Exception as e:
+            print(f"Error, Message.decode: {str(e)}")
+            return None
+
     def to_str(self) -> str:
-        abc = (f"Message(message_type={self.message_type}), testcase_type={self.message_type}, "
-               f"testcase_type={self.testcase_type}, data={self.data}, status={self.status_is_pass}")
+        abc = (f"Message(message_type={self.message_type}), testcase_type={self.testcase_type}, "
+               f"data={self.data}, status={self.status_is_pass}")
         return abc
 
 
 class TestcaseMessage(Message):  # stepnumber=0, stepaction=0)
     def __init__(self, message_type: MessageType = MessageType.INIT, step_number=0,
-                 testcase_type: TestcaseType = TestcaseType.INIT, data=None, status_is_pass=False):
+                 testcase_type: TestcaseType = TestcaseType.INIT, data=None, status_is_pass=ResponseStatus.NONE):
         super().__init__(message_type)
         if not isinstance(testcase_type, TestcaseType):
             raise ValueError(
@@ -249,3 +311,43 @@ class TestcaseMessage(Message):  # stepnumber=0, stepaction=0)
         # return TestcaseMessage(step_number=step_number, testcase_type=testcase_type, data=data)
         return cls(message_type=message_type, step_number=step_number, testcase_type=testcase_type, data=data,
                    status_is_pass=status_is_pass)
+
+
+class FileTransferMessage(Message):
+    def __init__(self, message_type: MessageType = MessageType.INIT,
+                 testcase_type: TestcaseType = TestcaseType.INIT, data=None, status_is_pass=False):
+        super().__init__(message_type)
+        if not isinstance(testcase_type, TestcaseType):
+            raise ValueError(
+                'ValueError, TestcaseMessage, MessageType.TestcaseMessage, TestcaseType Enum')
+
+        self.filename = ""
+        self.md5_file = ""
+        self.file_size = 0
+        self.contents = None
+
+    def set_filename(self, filename):
+        self.filename = filename
+
+    def set_md5_file(self, file_path):
+        with open(file_path, 'rb') as f:
+            data = f.read()
+            self.md5_file = hashlib.md5(data).hexdigest()
+
+    def set_filesize(self, file_path):
+        #        with open(file_path, 'rb') as f:
+        #            data = f.read()
+        #            self.filesize = len(data)
+        self.file_size = os.path.getsize(file_path)
+
+    def set_contents(self, file_path):
+        with open(file_path, 'rb') as f:
+            self.contents = f.read()
+
+    def encode(self):
+        return pickle.dumps(self)
+
+    @classmethod
+    def decode(cls, data):
+        return pickle.loads(data)
+

@@ -1,2 +1,17 @@
+Point Home(0,0)
+MoveWindow('calculator', Home)
 Sound()
+Sleep(2)
+GetMousePos(A_1)
+Sound()
+Sleep(2)
+GetMousePos(A_plus)
+Sound()
+Sleep(2)
+GetMousePos(A_2)
+Sound()
+Sleep(2)
+GetMousePos(A_eq)
+
+
 

@@ -46,12 +46,13 @@ class MainGUI(tk.Frame):
         self.script_filename_textbox = tk.Entry(self, width=100)
         self.script_filename_textbox.grid(row=0, column=1, columnspan=4, sticky="ew")
 
+        # we are the client, and letting user enter the server ip address
         self.connect_to_server_address = tk.Entry(self, width=20)
         self.connect_to_server_address.grid(row=0, column=1, sticky="ew")
 
+        # we are the client, and letting user enter the server ip port
         self.connect_to_server_ip = tk.Entry(self, width=10)
         self.connect_to_server_ip.grid(row=0, column=2, sticky="ew")
-
 
         # if we are server, we want to let user start running the script
         self.run_button = tk.Button(self, text="Run", command=self.run_clicked)
@@ -110,28 +111,33 @@ class MainGUI(tk.Frame):
         self.pm.ConfigMgr = ConfigMgr()
 
         self.pm.ScriptEngine = ScriptEngine(self.pm)
-        self.pm.NetworkMgr = NetworkMgr(self.pm)
+
+        # self.pm.NetworkMgr = NetworkMgr(self.pm)
+        # self.pm.NetworkMgr = NetworkMgr(self.pm)
+        self.NetworkMgr_thread = threading.Thread(target=NetworkMgr, name='NetworkMgr', args=(self.pm,))
+        self.NetworkMgr_thread.daemon = True
+        self.NetworkMgr_thread.start()
 
         # if self.pm.ConfigMgr.get_isserver():
 
-        self.incoming_thread = threading.Thread(target=self.pm.NetworkMgr.run_incoming_message_queue)
-        self.incoming_thread.daemon = True
-        self.incoming_thread.start()
-
-        self.outgoing_thread = threading.Thread(target=self.pm.NetworkMgr.run_outgoing_message_queue)
-        self.outgoing_thread.daemon = True
-        self.outgoing_thread.start()
+        # self.incoming_thread = threading.Thread(target=self.pm.NetworkMgr.run_incoming_message_queue)
+        # self.incoming_thread.daemon = True
+        # self.incoming_thread.start()
         #
-        self.receive_thread = threading.Thread(target=self.pm.NetworkMgr.receive_messages)
-        self.receive_thread.daemon = True
-        self.receive_thread.start()
-
-        self.listener_thread = threading.Thread(target=self.pm.NetworkMgr.start_listener)
-        self.listener_thread.daemon = True
-        self.listener_thread.start()
+        # self.outgoing_thread = threading.Thread(target=self.pm.NetworkMgr.run_outgoing_message_queue)
+        # self.outgoing_thread.daemon = True
+        # self.outgoing_thread.start()
+        # #
+        # self.receive_thread = threading.Thread(target=self.pm.NetworkMgr.receive_messages)
+        # self.receive_thread.daemon = True
+        # self.receive_thread.start()
+        #
+        # self.listener_thread = threading.Thread(target=self.pm.NetworkMgr.start_listener)
+        # self.listener_thread.daemon = True
+        # self.listener_thread.start()
 
         # default script to run, good for unattended clients
-        file_path = "ClickMyMouse.script"
+        file_path = "../ClickMyMouse.script"
         self.script_filename_textbox.delete(0, tk.END)
         self.script_filename_textbox.insert(0, file_path)  # (tk.END, file_path)
         self.pm.ScriptEngine.clear_script()
@@ -164,11 +170,14 @@ class MainGUI(tk.Frame):
                 time.sleep(1)
 
         time.sleep(1)
-        server_tcp_port = self.pm.NetworkMgr.port
+        server_tcp_port = self.pm.NetworkMgr.my_port
         now = datetime.now()
         formatted_now = now.strftime("%M")
         udp_port = 6050  #  + int(formatted_now)
 
+        server_add = self.pm.ConfigMgr.get_ip_address()
+        self.connect_to_server_address.delete(0, tk.END)
+        self.connect_to_server_address.insert(0, server_add)
         # self.udp_messenger = UDPPortHandler(udp_port=udp_port, server_tcp_port=server_tcp_port)
         # self.udp_messengerThread = threading.Thread(target=self.udp_messenger.receive_message)
         # self.udp_messengerThread.daemon = True
@@ -190,9 +199,9 @@ class MainGUI(tk.Frame):
         self.script_filename_textbox.delete(0, tk.END)
         self.script_filename_textbox.insert(tk.END, file_path)
 
-    def run_clicked(self):
+    def run_clicked(self, text_wanted=""):
         oldtext = self.run_button.cget('text')
-        if "Run" in oldtext:
+        if "Run" in oldtext and "Stop" not in text_wanted:
             self.run_button.config(text="Stop")
             self.pm.ScriptEngine.set_run(True)
             self.pm.ScriptEngine.set_pause(False)

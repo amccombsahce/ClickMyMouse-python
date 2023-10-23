@@ -8,8 +8,8 @@ class ConfigMgr:
 
     def __init__(self, filename='ClickMyMouse.config'):
         self.filename = filename
-        self.__app_config = 'ClickMyMouse.config'
-        self.__ip_address = "127.0.0.1"
+        self.__app_config = filename
+        self.__ip_address = "ubuntu"
         self.__is_server = False
         self.__tcp_port = 5000
         self.__udp_port = 5005
@@ -20,7 +20,7 @@ class ConfigMgr:
         config = configparser.ConfigParser()
         config.read(self.filename)
         if 'network' in config:
-            self.__ip_address = config.get('network', 'ip_address', fallback=self.__is_server)
+            self.__ip_address = config.get('network', 'ip_address', fallback=self.__ip_address)
             self.__is_server = config.getboolean('network', 'is_server', fallback=self.__is_server)
             self.__tcp_port = config.getint('network', 'tcp_port', fallback=self.__tcp_port)
             self.__udp_port = config.getint('network', 'udp_port', fallback=self.__udp_port)

@@ -20,7 +20,7 @@ class Logger:
 
         # create a logs folder for logs
         cwd = os.getcwd()
-        log_dir = os.path.join(cwd, 'logs')
+        log_dir = os.path.join(cwd, '../logs')
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
 

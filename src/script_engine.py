@@ -4,11 +4,14 @@ import pyautogui
 import subprocess
 import hashlib
 import vlc
+import binascii
 # my stuff
 from file_mgr import FileMgr
 from message_type import *  # MessageType, TestcaseType, TestcaseMessage, TestcaseTypeData, TestcaseVariableType, R
 from point_type import Point
 from wait_for_me import wait_for_me
+import uu
+import io
 
 
 # ScriptEngine is used to store the script when it is read in from a flat file.
@@ -22,6 +25,7 @@ class ScriptEngine:
         self.script = {}
         self.is_run = False
         self.is_paused = True  # pause will hold the ScriptMgr.run
+        self.simon_says = False  # not enabled until START_TEST
 
     # move window from testcase command MoveWindow()
     def move_window_to_position(self, window_title, x, y):
@@ -91,7 +95,7 @@ class ScriptEngine:
         self.ParamMgr.Logger.debug("ScriptEngine.run, all-done")
         self.is_run = False
         self.is_paused = True
-        self.ParamMgr.main_gui.run_clicked()  # reset the Stop button to Run button
+        self.ParamMgr.main_gui.run_clicked("Stop")  # reset the Stop button to Run button
 
     def run_script(self):
         self.ParamMgr.Logger.debug("ScriptEngine.run_script")
@@ -160,7 +164,7 @@ class ScriptEngine:
 
     # send_variable_client
     # send a variable to the clients
-    def send_variable_client(self, testcase_variable_type: TestcaseVariableType = None, data=None):
+    def send_variable_client_wait_response(self, testcase_variable_type: TestcaseVariableType = None, data=None):
         self.ParamMgr.Logger.debug(f"ScriptEngine.send_variable_client: "  # ,{str(testcase_variable)},"
                                    f" with data: {str(data)}")
 
@@ -204,18 +208,10 @@ class ScriptEngine:
             variable_value = variable_data['variable_value']
 
         if testcase_variable_type == TestcaseVariableType.INT:
-            if is_static:  # if static, only insert if it does not already exist, change value is not allowed
-                if not self.ParamMgr.is_script_int(variable_name):
-                    self.ParamMgr.set_script_int(variable_name, int(variable_value))
-            else:
-                self.ParamMgr.set_script_int(variable_name, int(variable_value))
+            self.ParamMgr.set_script_int(variable_name, int(variable_value), is_static)
 
         elif testcase_variable_type == TestcaseVariableType.STRING:
-            if is_static:  # if static, only insert if it does not already exist, change value is not allowed
-                if not self.ParamMgr.is_script_string(variable_name):
-                    self.ParamMgr.set_script_string(variable_name, str(variable_value))
-            else:
-                self.ParamMgr.set_script_string(variable_name, str(variable_value))
+            self.ParamMgr.set_script_string(variable_name, str(variable_value), is_static)
 
         elif testcase_variable_type == TestcaseVariableType.POINT:
 
@@ -225,11 +221,8 @@ class ScriptEngine:
             if 'variable_value_y' in variable_data:
                 variable_value_y = variable_data['variable_value_y']
 
-            if is_static:  # if static, only insert if it does not already exist, change value is not allowed
-                if not self.ParamMgr.is_script_point(variable_name):
-                    self.ParamMgr.set_script_point(variable_name, Point(int(variable_value_x), int(variable_value_y)))
-            else:
-                self.ParamMgr.set_script_point(variable_name, Point(int(variable_value_x), int(variable_value_y)))
+            self.ParamMgr.set_script_point(variable_name, Point(int(variable_value_x), int(variable_value_y)),
+                                           is_static)
 
         self.ParamMgr.NetworkMgr.send_variable_message(MessageType.TEST_CASE_VARIABLE_RESPONSE,
                                                        testcase_variable_type=testcase_variable_type)
@@ -250,16 +243,19 @@ class ScriptEngine:
         self.ParamMgr.Logger.info(f"stepcount: {str(step_number)}, command: {str(testcase_type)}")
 
         # TestcaseMessage has status for pass/fail, initialize as Fail
-        status_is_pass = False
+        status_is_pass = ResponseStatus.NONE
 
         # this is where should check for simon says
-        did_simon_say_go = self.ParamMgr.simon_says
+        did_simon_say_go = self.simon_says
         if not did_simon_say_go:
+            # we did not get START_ message, reply with AWAY to indicate testcase not executed
+            status_is_pass = ResponseStatus.AWAY
             self.ParamMgr.NetworkMgr.send_testcase_message_wait_response(MessageType.TEST_CASE_RESPONSE,
                                                                          step_number=step_number,
                                                                          testcase_type=testcase_type,
                                                                          status_is_pass=status_is_pass)
 
+            return
 
         try:
             if testcase_type == TestcaseType.INIT:
@@ -273,7 +269,7 @@ class ScriptEngine:
                 # pygame.mixer.init()
 
                 # default file
-                sound_filename = 'ding.wav'  # default
+                sound_filename = '../scripts/ding.wav'  # default
 
                 # check if user wants a different filename
                 if data_object is not None:
@@ -290,11 +286,16 @@ class ScriptEngine:
                     # p = vlc.MediaPlayer(filepath)
                     p = vlc.MediaPlayer(sound_filename)
                     p.play()
+                    abc = p.is_playing()
 
-                    status_is_pass = p.is_playing()
+                    if abc == 1:
+                        status_is_pass = ResponseStatus.PASS
+                    else:
+                        status_is_pass = ResponseStatus.FAIL
                 else:
                     self.ParamMgr.Logger.error(
                         f"ScriptEngine.client_testcase_cmd.SOUND, Error, file not found: {str(filepath)}")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message_wait_response(MessageType.TEST_CASE_RESPONSE,
                                                                              step_number=step_number,
@@ -326,32 +327,33 @@ class ScriptEngine:
 
                 try:
                     pyautogui.screenshot(filepath)
-                    status_is_pass = True
+                    status_is_pass = ResponseStatus.PASS
                     abc_data = {'filename': filepath}
                 except AttributeError as e:
                     self.ParamMgr.Logger.error(
                         f"AttributeError: {str(e)}")
+                    status_is_pass = ResponseStatus.EERR
                 except ValueError as e:
                     self.ParamMgr.Logger.error(
                         f"ValueError Error: {str(e)}")
+                    status_is_pass = ResponseStatus.EERR
 
                 # send the path back to the server
                 self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.TEST_CASE_RESPONSE,
                                                                   testcase_type=testcase_type,
                                                                   status_is_pass=status_is_pass,
                                                                   data=abc_data)
-
             elif testcase_type == TestcaseType.SLEEP:
                 self.ParamMgr.Logger.debug("ScriptEngine.client_testcase_cmd.SLEEP")
 
                 self.ParamMgr.Logger.info(f"sleeping")
 
-                status_is_pass = True
+                status_is_pass = ResponseStatus.PASS
 
-                self.ParamMgr.NetworkMgr.send_testcase_message_wait_response(MessageType.TEST_CASE_RESPONSE,
-                                                                             step_number=step_number,
-                                                                             testcase_type=testcase_type,
-                                                                             status_is_pass=status_is_pass)
+                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
+                                                               step_number=step_number,
+                                                               testcase_type=testcase_type,
+                                                               status_is_pass=status_is_pass)
 
             elif testcase_type == TestcaseType.MOUSE_MOVE:
                 self.ParamMgr.Logger.debug("ScriptEngine.client_testcase_cmd.MOUSE_MOVE")
@@ -363,12 +365,12 @@ class ScriptEngine:
                 point_name = None
 
                 if data_object is not None:
+                    if 'point' in data_object:
+                        point_name = data_object['point']
                     if 'x' in data_object:
                         x_pos = int(data_object['x'])
                     if 'y' in data_object:
                         y_pos = int(data_object['y'])
-                    if 'point' in data_object:
-                        point_name = data_object['point']
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -376,24 +378,29 @@ class ScriptEngine:
                             x_pos = point_value.x
                             y_pos = point_value.y
 
-                self.ParamMgr.Logger.info(f"MouseMove: x= {str(x_pos)}, y= {str(y_pos)}")
+                    self.ParamMgr.Logger.info(f"MouseMove: x= {str(x_pos)}, y= {str(y_pos)}")
 
-                try:
-                    x = x_pos
-                    y = y_pos
-                    pyautogui.moveTo(x, y)
-                    pyautogui.sleep(0.1)  # allow time to get new
-                    new_x, new_y = pyautogui.position()  # check the position that it moved to
+                    try:
+                        x = x_pos
+                        y = y_pos
+                        pyautogui.moveTo(x, y)
+                        pyautogui.sleep(0.1)  # allow time to get new
+                        new_x, new_y = pyautogui.position()  # check the position that it moved to
 
-                except OSError as e:
-                    self.ParamMgr.Logger.error(f"OSError: {str(e)}")
-                except pyautogui.PyAutoGUIException as e:
-                    self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                    except pyautogui.PyAutoGUIException as e:
+                        self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
 
-                if new_x == x_pos and new_y == y_pos:
-                    status_is_pass = True
+                    if new_x == x_pos and new_y == y_pos:
+                        status_is_pass = ResponseStatus.PASS
+                    else:
+                        status_is_pass = ResponseStatus.FAIL
+                        self.ParamMgr.Logger.warning(f"Warning, MouseMove to: x= {str(new_x)}, y= {str(new_y)}")
+
                 else:
-                    self.ParamMgr.Logger.warning(f"Warning, MouseMove to: x= {str(new_x)}, y= {str(new_y)}")
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
                                                                testcase_type=testcase_type,
@@ -408,14 +415,14 @@ class ScriptEngine:
                 amount_to_scroll = 1  # default is 1
 
                 if data_object is not None:
-                    if 'x' in data_object:
-                        x_pos = int(data_object['x'])
-                    if 'y' in data_object:
-                        y_pos = int(data_object['y'])
                     if 'point' in data_object:
                         point_name = data_object['point']
                     if 'amount_to_scroll' in data_object:
                         amount_to_scroll = int(data_object['amount_to_scroll'])
+                    if 'x' in data_object:
+                        x_pos = int(data_object['x'])
+                    if 'y' in data_object:
+                        y_pos = int(data_object['y'])
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -428,13 +435,19 @@ class ScriptEngine:
 
                     try:
                         pyautogui.scroll(amount_to_scroll, x=x_pos, y=y_pos)
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
                     except OSError as e:
                         self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
-                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
+                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
+                                                               step_number=step_number,
                                                                testcase_type=testcase_type,
                                                                status_is_pass=status_is_pass)
 
@@ -449,11 +462,11 @@ class ScriptEngine:
                 y_pos = current_position[1]
                 abc_data = {'x': str(x_pos), 'y': str(y_pos)}
 
-                # if we got here, then it was successful
-                status_is_pass = True
-
                 # show the user
                 self.ParamMgr.Logger.info(f"MouseGetPos:  x= {str(x_pos)}, y= {str(y_pos)}")
+
+                # if we got here, then it was successful
+                status_is_pass = ResponseStatus.PASS
 
                 # store the value to the local variable, only if requested by supplying the point name
                 if data_object is not None:
@@ -476,12 +489,12 @@ class ScriptEngine:
                 point_name = None
 
                 if data_object is not None:
+                    if 'point' in data_object:
+                        point_name = data_object['point']
                     if 'x' in data_object:
                         x_pos = int(data_object['x'])
                     if 'y' in data_object:
                         y_pos = int(data_object['y'])
-                    if 'point' in data_object:
-                        point_name = data_object['point']
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -489,16 +502,26 @@ class ScriptEngine:
                             x_pos = point_value.x
                             y_pos = point_value.y
 
+                    if self.ParamMgr.is_script_point('Home'):
+                        point_home = self.ParamMgr.is_script_point('Home')
+                        x_pos += point_home.x
+                        y_pos += point_home.y
+
                     self.ParamMgr.Logger.info(f"MouseLeftClick:  x= {str(x_pos)}, y= {str(y_pos)}")
 
                     try:
                         pyautogui.click(x=x_pos, y=y_pos)
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
                     except OSError as e:
                         self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(
                             f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
                                                                testcase_type=testcase_type,
@@ -512,12 +535,12 @@ class ScriptEngine:
                 point_name = None
 
                 if data_object is not None:
+                    if 'point' in data_object:
+                        point_name = data_object['point']
                     if 'x' in data_object:
                         x_pos = int(data_object['x'])
                     if 'y' in data_object:
                         y_pos = int(data_object['y'])
-                    if 'point' in data_object:
-                        point_name = data_object['point']
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -528,11 +551,16 @@ class ScriptEngine:
                     self.ParamMgr.Logger.info(f"MouseRightClick:  x= {str(x_pos)}, y= {str(y_pos)}")
                     try:
                         pyautogui.rightClick(x=x_pos, y=y_pos)
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
                     except OSError as e:
                         self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
                                                                testcase_type=testcase_type,
@@ -546,12 +574,12 @@ class ScriptEngine:
                 point_name = None
 
                 if data_object is not None:
+                    if 'point' in data_object:
+                        point_name = data_object['point']
                     if 'x' in data_object:
                         x_pos = int(data_object['x'])
                     if 'y' in data_object:
                         y_pos = int(data_object['y'])
-                    if 'point' in data_object:
-                        point_name = data_object['point']
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -563,13 +591,19 @@ class ScriptEngine:
 
                     try:
                         pyautogui.middleClick(x=x_pos, y=y_pos)
-                        status_is_pass = True
-                    except OSError as e:
-                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.PASS
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
-                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
+                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
+                                                               step_number=step_number,
                                                                testcase_type=testcase_type,
                                                                status_is_pass=status_is_pass)
 
@@ -581,12 +615,12 @@ class ScriptEngine:
                 point_name = None
 
                 if data_object is not None:
+                    if 'point' in data_object:
+                        point_name = data_object['point']
                     if 'x' in data_object:
                         x_pos = int(data_object['x'])
                     if 'y' in data_object:
                         y_pos = int(data_object['y'])
-                    if 'point' in data_object:
-                        point_name = data_object['point']
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -597,13 +631,16 @@ class ScriptEngine:
                     self.ParamMgr.Logger.info(f"MouseDoubleClick:  x= {str(x_pos)}, y= {str(y_pos)}")
                     try:
                         pyautogui.doubleClick(x=x_pos, y=y_pos)
-                        status_is_pass = True
-                    except OSError as e:
-                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.PASS
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
 
-                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
+                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
+                                                               step_number=step_number,
                                                                testcase_type=testcase_type,
                                                                status_is_pass=status_is_pass)
 
@@ -615,12 +652,12 @@ class ScriptEngine:
                 point_name = None
 
                 if data_object is not None:
+                    if 'point' in data_object:
+                        point_name = data_object['point']
                     if 'x' in data_object:
                         x_pos = int(data_object['x'])
                     if 'y' in data_object:
                         y_pos = int(data_object['y'])
-                    if 'point' in data_object:
-                        point_name = data_object['point']
 
                     if point_name is not None:
                         if self.ParamMgr.is_script_point(point_name):
@@ -632,13 +669,19 @@ class ScriptEngine:
 
                     try:
                         pyautogui.tripleClick(x=x_pos, y=y_pos)
-                        status_is_pass = True
-                    except OSError as e:
-                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.PASS
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException:{str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
-                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE, step_number=step_number,
+                self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
+                                                               step_number=step_number,
                                                                testcase_type=testcase_type,
                                                                status_is_pass=status_is_pass)
 
@@ -676,11 +719,16 @@ class ScriptEngine:
 
                     try:
                         self.move_window_to_position(window_name, x_pos, y_pos)
-                        status_is_pass = True
-                    except OSError as e:
-                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.PASS
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                step_number=step_number,
@@ -702,13 +750,19 @@ class ScriptEngine:
                     try:
                         # pyautogui.typewrite(keyboard_press, interval=0.25)
                         pyautogui.press(keyboard_press)
-                        status_is_pass = True
-                    except ValueError as e:
-                        self.ParamMgr.Logger.error(f"ValueError: {str(e)}")
-                    except OSError as e:
-                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.PASS
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except ValueError as e:
+                        self.ParamMgr.Logger.error(f"ValueError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                step_number=step_number,
@@ -732,16 +786,22 @@ class ScriptEngine:
                         pyautogui.keyDown(abc)
                         # pyautogui.keyDown(keyboard_press)
                         # pyautogui.press(keyboard_press)
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
                         abc01 = abc == keyboard_press
                         print(f"keydown: ctrl= {str(abc01)}")
 
-                    except ValueError as e:
-                        self.ParamMgr.Logger.error(f"ValueError: {str(e)}")
-                    except OSError as e:
-                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except ValueError as e:
+                        self.ParamMgr.Logger.error(f"ValueError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                    except OSError as e:
+                        self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                step_number=step_number,
@@ -764,15 +824,21 @@ class ScriptEngine:
                         abc = 'ctrl'
                         pyautogui.keyUp(abc)
                         # pyautogui.keyUp(keyboard_press)
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
                         abc01 = abc == keyboard_press
                         print(f"keyup: ctrl= {str(abc01)}")
                     except ValueError as e:
                         self.ParamMgr.Logger.error(f"ValueError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except OSError as e:
                         self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                step_number=step_number,
@@ -807,14 +873,20 @@ class ScriptEngine:
                             pyautogui.hotkey(keyboard_press_1, keyboard_press_2, keyboard_press_3)
                         else:
                             pyautogui.hotkey(keyboard_press_1, keyboard_press_2)
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
 
                     except ValueError as e:
                         self.ParamMgr.Logger.error(f"ValueError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except OSError as e:
                         self.ParamMgr.Logger.error(f"OSError: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(f"PyAutoGUIException: {str(e)}")
+                        status_is_pass = ResponseStatus.EERR
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                step_number=step_number,
@@ -853,13 +925,15 @@ class ScriptEngine:
 
                     if result:
                         self.ParamMgr.Logger.info(f"WaitForInLogFile: found text: {str(wait_for_text)}")
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
                     else:
                         self.ParamMgr.Logger.warning(
                             f"Warning, WaitForInLogFile: did not find text: {str(wait_for_text)}")
+                        status_is_pass = ResponseStatus.FAIL
 
                 else:
-                    self.ParamMgr.Logger.error(f"Error, Script.Engine.client_testcase_cmd: invalid  WaitForInLogFile")
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                step_number=step_number,
@@ -872,7 +946,8 @@ class ScriptEngine:
                 # ExecuteCmd will start a process
                 # we need the filename of the process (fullpath is best), arguments to the process
                 # we need to know if the user wants the process to complete before continuing or just start the process
-                # we need to know if the user wants us to wait, what is the timeout for that max time to wait for the process to complete
+                # we need to know if the user wants us to wait, what is the timeout for that max time to
+                # wait for the process to complete
 
                 if data_object is not None:
                     process = None
@@ -947,20 +1022,32 @@ class ScriptEngine:
                                     stdout, stderr = process.communicate(timeout=time_out)
                                 else:
                                     stdout, stderr = process.communicate()
-                                self.ParamMgr.Logger.info(f"stdout: {str(stdout)}")
-                                self.ParamMgr.Logger.info(f"stderr: {str(stderr)}")
+
+                                self.ParamMgr.Logger.debug(f"stdout: {str(stdout)}")
+                                self.ParamMgr.Logger.error(f"stderr: {str(stderr)}")
 
                             self.ParamMgr.Logger.info(f"return code: {str(process.returncode)}")
 
+                            if process_wait_for_exit is False or time_out is None or process.returncode == 0:
+                                status_is_pass = ResponseStatus.PASS
+                            elif process.returncode != 0:  # not zero it returned an error
+                                status_is_pass = ResponseStatus.ERRR
+
                         except TimeoutError as e:  # BingAI says that communicate(timeout) will throw an exception, but
                             self.ParamMgr.Logger.error(f"TimeoutError, subprocess: {str(e)}")
+                            status_is_pass = ResponseStatus.EERR
                         except Exception as e:  # Exception gets thrown not TimeoutError
                             self.ParamMgr.Logger.error(f"Exception, subprocess: {str(e)}")
+                            status_is_pass = ResponseStatus.EERR
 
-                        if process_wait_for_exit is False or time_out is None or process.returncode == 0:
-                            status_is_pass = True
+
                     else:
                         self.ParamMgr.Logger.error(f"Error, Process not found: {str(process_path)}")
+                        status_is_pass = ResponseStatus.ERRR
+
+                else:
+                    self.ParamMgr.Logger.error(f"Error, data_object is None")
+                    status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                testcase_type=testcase_type,
@@ -970,10 +1057,10 @@ class ScriptEngine:
                 self.ParamMgr.Logger.info("ScriptEngine.client_testcase_cmd.IMG_GET_POS")
 
                 if data_object is not None:
-                    file_exists = False
                     filename = None
                     md5_hash = None
-                    variable_name = None
+                    variable_name = None       # does the user want to store the location to a Point
+                    have_correct_file = False  # if we don't have the file, we can request the file from the server
 
                     if 'filename' in data_object:
                         filename = data_object['filename']
@@ -982,11 +1069,37 @@ class ScriptEngine:
                     if 'variable_name' in data_object:
                         variable_name = data_object['variable_name']
 
-                    if not os.path.exists(filename):
-                        # don't have it, then get it
-                        self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_REQUEST,
-                                                                          testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER)
+                    if os.path.exists(filename):
+                        md5_hash_on_disk = self.ParamMgr.calculate_md5(filename)
 
+                        if md5_hash == md5_hash_on_disk:
+                            have_correct_file = True
+                        else:
+                            os.remove(filename)  # bad md5 sum, delete it and request new file
+
+                    if not have_correct_file:
+                        # don't have it, then get it
+                        self.ParamMgr.Logger.warning(f"Warning: img file not found, requesting")
+                        file_data = {'filename': filename}
+                        self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_REQUEST,
+                                                                          testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
+                                                                          data=file_data)
+
+                    # we requested the file, not we wait until we get the correct file before we proceed
+                    while not have_correct_file:
+                        while not os.path.exists(filename):
+                            time.sleep(0.1)
+
+                        while not have_correct_file:
+                            if os.path.exists(filename):
+                                md5_hash_on_disk = self.ParamMgr.calculate_md5(filename)
+
+                                if md5_hash == md5_hash_on_disk:
+                                    have_correct_file = True
+                                else:
+                                    time.sleep(0.1)
+
+                    # if we got here, then have_file should be True
                     if os.path.exists(filename):
                         md5_hash_on_disk = self.ParamMgr.calculate_md5(filename)
 
@@ -996,29 +1109,30 @@ class ScriptEngine:
                                 # the_box = pyautogui.locateOnScreen(filename)
                                 # point_a = pyautogui.center(the_box)
                                 point_a = pyautogui.locateCenterOnScreen(filename, 1.1)
+                                status_is_pass = ResponseStatus.PASS
 
+                                # store the coordinates if user supplied variable
                                 if variable_name is not None:
                                     self.ParamMgr.set_script_point(variable_name, point_a)
-                                    status_is_pass = True
 
                             except pyautogui.ImageNotFoundException as e:
                                 self.ParamMgr.Logger.error(
                                     f"ImageNotFoundException Error, ImageNotFoundException: {str(e)}")
-
+                                status_is_pass = ResponseStatus.EERR
                             except pyautogui.PyAutoGUIException as e:
                                 self.ParamMgr.Logger.error(f"PyAutoGUIException Error, PyAutoGUIException: {str(e)}")
+                                status_is_pass = ResponseStatus.EERR
 
                         else:  # md5_hash mismatch
                             self.ParamMgr.Logger.error(
                                 f"Error, MD5 mismatch: actual:{str(md5_hash_on_disk)}, expected: {str(md5_hash)}")
-
+                            status_is_pass = ResponseStatus.ERRR
                             os.remove(filename)  # bad md5 sum, delete it and request new file
-                            self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_REQUEST,
-                                                                              testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER)
 
                     else:  # not os.path.exists(filename)
                         self.ParamMgr.Logger.error(
                             f"Error, img filename not found: {str(filename)}")
+                        status_is_pass = ResponseStatus.ERRR
 
                 self.ParamMgr.NetworkMgr.send_testcase_message(MessageType.TEST_CASE_RESPONSE,
                                                                testcase_type=testcase_type,
@@ -1560,6 +1674,23 @@ class ScriptEngine:
 
             abc_break = 1
 
+        elif opcode == "FileTransferFromServer":
+            self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.FileTransferFromServer")
+
+            req_file_data = None
+
+            if len(words) > 1:
+                filename = words[1].replace("'", "").replace('"', '')
+                req_file_data = {'filename': str(filename)}
+
+                if os.path.exists(filename):
+                    md5_filename_hash = self.ParamMgr.calculate_md5(filename)
+                    req_file_data['md5'] = md5_filename_hash
+
+            self.send_maintenance_message_wait_response(message_type=MessageType.MAINTENANCE_REQUEST,
+                                                        testcase_type=TestcaseType.GET_FILE_FROM_SERVER,
+                                                        data=req_file_data)
+
         elif opcode == "Int":
             self.ParamMgr.Logger.debug("ScriptEngine.server_runscript_cmd.Int")
 
@@ -1580,7 +1711,7 @@ class ScriptEngine:
                 int_data = {'variable_name': str(variable_name), 'variable_value': str(variable_value),
                             'static': is_static}
 
-                self.send_variable_client(TestcaseVariableType.INT, data=int_data)
+                self.send_variable_client_wait_response(TestcaseVariableType.INT, data=int_data)
 
             else:
                 self.ParamMgr.Logger.error(
@@ -1605,7 +1736,7 @@ class ScriptEngine:
 
                 str_data = {'variable_name': str(string_name), 'variable_value': str(string_value),
                             'static': is_static}
-                self.send_variable_client(TestcaseVariableType.STRING, data=str_data)
+                self.send_variable_client_wait_response(TestcaseVariableType.STRING, data=str_data)
 
             else:
                 self.ParamMgr.Logger.error(
@@ -1638,7 +1769,7 @@ class ScriptEngine:
                             'variable_value_x': str(point_value_x),
                             'variable_value_y': str(point_value_y),
                             'static': is_static}
-                self.send_variable_client(TestcaseVariableType.POINT, data=pnt_data)
+                self.send_variable_client_wait_response(TestcaseVariableType.POINT, data=pnt_data)
 
             else:
                 self.ParamMgr.Logger.error(
@@ -1668,27 +1799,37 @@ class ScriptEngine:
         self.ParamMgr.Logger.info(f"command: {str(testcase_type)}, from: {str(peer_info)}")
 
         # TestcaseMessage has status for pass/fail, initialize as Fail
-        status_is_pass = False
+        status_is_pass = ResponseStatus.NONE
 
         if message_type == MessageType.MAINTENANCE_REQUEST:
             try:
                 if testcase_type == TestcaseType.INIT:
+                    # I received this message, that means I am the client
                     self.ParamMgr.Logger.debug("ScriptEngine.run_maintenance_cmd.INIT")
                     # TODO do stuff so that we know that the client has connected
 
                     self.ParamMgr.main_gui.add_connection(str(peer_info), "SERVER")
                     self.ParamMgr.client_attendance.add_client_attendance(peer_info)
 
-                    # set client ledger
+                    # set client ledger for main req sent to server
                     self.ParamMgr.set_client_ledger(peer_info)
 
                     self.ParamMgr.Logger.info(f"INIT_REQUEST from peer_info:{str(peer_info)}")
 
-                    status_is_pass = True
+                    status_is_pass = ResponseStatus.PASS
 
-                    self.ParamMgr.client_attendance.add_client_response(peer_info, message_type=message_type,
-                                                                        testcase_type=testcase_type)
+                    # self.ParamMgr.client_attendance.add_client_response(peer_info, message_type=message_type,
+                    #                                                     testcase_type=testcase_type)
 
+                    self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_RESPONSE,
+                                                                      testcase_type=testcase_type,
+                                                                      status_is_pass=status_is_pass)
+                elif testcase_type == TestcaseType.SIMON_STOP:
+                    self.ParamMgr.Logger.debug("ScriptEngine.run_maintenance_cmd.SIMON_STOP")
+
+                    # did simon time you out ? >:)
+                    self.ParamMgr.simon_says = False
+                    status_is_pass = ResponseStatus.PASS
                     self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_RESPONSE,
                                                                       testcase_type=testcase_type,
                                                                       status_is_pass=status_is_pass)
@@ -1719,7 +1860,7 @@ class ScriptEngine:
                         pyautogui.screenshot(filepath)
                         # send the filename back to the server
                         abc_data = {'filename': filepath}
-                        status_is_pass = True
+                        status_is_pass = ResponseStatus.PASS
 
                     except pyautogui.PyAutoGUIException as e:
                         self.ParamMgr.Logger.error(
@@ -1747,7 +1888,7 @@ class ScriptEngine:
                     # pygame.mixer.init()
 
                     # default file
-                    sound_filename = 'ding.wav'  # default
+                    sound_filename = '../scripts/ding.wav'  # default
 
                     # check if user wants a different filename
                     if data_object is not None:
@@ -1769,7 +1910,7 @@ class ScriptEngine:
                         # play returns 0 when starts to play
                         # play returns -1 with error
                         if status != -1:
-                            status_is_pass = True
+                            status_is_pass = ResponseStatus.PASS
                     else:
                         self.ParamMgr.Logger.error(f"Error, file not found: {str(sound_filename)}")
 
@@ -1782,7 +1923,7 @@ class ScriptEngine:
 
                     # TODO do stuff so that client will know when to start accepting commands
                     self.ParamMgr.simon_says = True  # when symon says
-                    status_is_pass = True
+                    status_is_pass = ResponseStatus.PASS
                     self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_RESPONSE,
                                                                       testcase_type=testcase_type,
                                                                       status_is_pass=status_is_pass)
@@ -1790,38 +1931,56 @@ class ScriptEngine:
                 elif testcase_type == TestcaseType.STOP_TEST:
                     # we are the client, aka SUT
                     self.ParamMgr.Logger.info("ScriptEngine.run_maintenance_cmd.STOP_TEST")  # info logging se we know
-                    self.ParamMgr.client_attendance.add_client_response(peer_info, message_type=message_type,
-                                                                        testcase_type=testcase_type)
-                    self.ParamMgr.Logger.info(f"Test Results:")
-                    self.ParamMgr.Logger.info(f"item count in Int: {str(self.ParamMgr.get_int_count())}")
-                    self.ParamMgr.Logger.info(f"item count in String: {str(self.ParamMgr.get_string_count())}")
-                    self.ParamMgr.Logger.info(f"item count in Point: {str(self.ParamMgr.get_point_count())}")
 
+                    # TODO do stuff so that client will know when to stop accepting commands
+                    self.simon_says = False
+
+                    self.ParamMgr.Logger.info(f"Test Results:")
+                    self.ParamMgr.Logger.info(f"item count in Int: {str(self.ParamMgr.get_script_int_count())}")
+                    self.ParamMgr.Logger.info(f"{str(self.ParamMgr.get_script_int_str())}")
+
+                    self.ParamMgr.Logger.info(f"item count in String: {str(self.ParamMgr.get_script_string_count())}")
+                    self.ParamMgr.Logger.info(f"{str(self.ParamMgr.get_script_string_str())}")
+
+                    self.ParamMgr.Logger.info(f"item count in Point: {str(self.ParamMgr.get_script_point_count())}")
+                    self.ParamMgr.Logger.info(f"{str(self.ParamMgr.get_script_point_str())}")
+
+                    # get ledger to show the user the stats
                     abc = self.ParamMgr.get_client_ledger(peer_info)
+
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_testcase_count: {str(abc.test_statistics.total_testcase_count)}")
+                        f"SUT: {peer_info}, total_testcase_request_sent_count: {str(abc.test_statistics.total_testcase_request_sent_count)}")
+                    self.ParamMgr.Logger.info(
+                        f"SUT: {peer_info}, total_testcase_request_recv_count: {str(abc.test_statistics.total_testcase_request_recv_count)}")
+                    self.ParamMgr.Logger.info(
+                        f"SUT: {peer_info}, total_testcase_response_sent_count: {str(abc.test_statistics.total_testcase_response_sent_count)}")
+                    self.ParamMgr.Logger.info(
+                        f"SUT: {peer_info}, total_testcase_response_recv_count: {str(abc.test_statistics.total_testcase_response_recv_count)}")
+
                     self.ParamMgr.Logger.info(
                         f"SUT: {peer_info}, total_testcase_pass_count: {str(abc.test_statistics.total_testcase_pass_count)}")
                     self.ParamMgr.Logger.info(
                         f"SUT: {peer_info}, total_testcase_fail_count: {str(abc.test_statistics.total_testcase_fail_count)}")
 
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_variable_count: {str(abc.test_statistics.total_variable_count)}")
+                        f"SUT: {peer_info}, total_variable_request_sent_count: {str(abc.test_statistics.total_variable_request_sent_count)}")
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_variable_pass_count: {str(abc.test_statistics.total_variable_pass_count)}")
+                        f"SUT: {peer_info}, total_variable_request_recv_count: {str(abc.test_statistics.total_variable_request_recv_count)}")
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_variable_fail_count: {str(abc.test_statistics.total_variable_fail_count)}")
+                        f"SUT: {peer_info}, total_variable_response_sent_count: {str(abc.test_statistics.total_variable_response_sent_count)}")
+                    self.ParamMgr.Logger.info(
+                        f"SUT: {peer_info}, total_variable_response_recv_count: {str(abc.test_statistics.total_variable_response_recv_count)}")
 
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_maintenance_count: {str(abc.test_statistics.total_maintenance_count)}")
+                        f"SUT: {peer_info}, total_maintenance_request_sent_count: {str(abc.test_statistics.total_maintenance_request_sent_count)}")
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_maintenance_pass_count: {str(abc.test_statistics.total_maintenance_pass_count)}")
+                        f"SUT: {peer_info}, total_maintenance_request_recv_count: {str(abc.test_statistics.total_maintenance_request_recv_count)}")
                     self.ParamMgr.Logger.info(
-                        f"SUT: {peer_info}, total_maintenance_fail_count: {str(abc.test_statistics.total_maintenance_fail_count)}")
+                        f"SUT: {peer_info}, total_maintenance_response_sent_count: {str(abc.test_statistics.total_maintenance_response_sent_count)}")
+                    self.ParamMgr.Logger.info(
+                        f"SUT: {peer_info}, total_maintenance_response_recv_count: {str(abc.test_statistics.total_maintenance_response_recv_count)}")
 
-                    # TODO do stuff so that client will know when to stop accepting commands
-                    self.ParamMgr.simon_says = False
-                    status_is_pass = True
+                    status_is_pass = ResponseStatus.PASS
                     self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_RESPONSE,
                                                                       testcase_type=testcase_type,
                                                                       status_is_pass=status_is_pass)
@@ -1831,9 +1990,8 @@ class ScriptEngine:
                     # Request
                     if data_object is not None:
                         filename = None
-                        have_bytes = None
+                        have_bytes = 0
                         meow = None
-
 
                         if 'filename' in data_object:
                             filename = data_object['filename']
@@ -1847,14 +2005,12 @@ class ScriptEngine:
                             chunk_data = None
 
                             try:
-
                                 md5_filename_hash = self.ParamMgr.calculate_md5(filename)
-                                filename_size = os.path.getsize(filename)
+                                file_size_on_disk = os.path.getsize(filename)
 
                                 with open(filename, 'rb') as file:
-                                    if have_bytes is not None:
-                                        if have_bytes > 0:
-                                            file.seek(have_bytes)
+                                    if have_bytes > 0:
+                                        file.seek(have_bytes)
 
                                     # lets try to use 1 tcp packet for each transfer
                                     filename_len = len(filename)
@@ -1865,20 +2021,26 @@ class ScriptEngine:
                                     buffer_size = 1460 - 40 - 32 - filename_len  # TODO make this a Parameter? # how big is mystuff?
 
                                     file_chunk = file.read(buffer_size)  # read in the file were we left off
-                                    file_chunk_len = len(file_chunk)  # get the actual size read
 
-                                    md5_chunk = hashlib.md5(file_chunk).hexdigest()  # get md5 for packet checking
+                                    read_size = len(file_chunk)  # get the actual size read
+
+                                    # convert binary to text
+                                    text_chunk = binascii.b2a_base64(file_chunk).decode()
+                                    md5_chunk = hashlib.md5(
+                                        text_chunk.encode()).hexdigest()  # get md5 for packet checking
+
                                     md5_chunk_len = len(md5_chunk)  # don't need this, here just for fun
 
                                     is_done = False
 
-                                    if filename_len <= have_bytes + file_chunk_len:
+                                    if file_size_on_disk <= have_bytes + read_size:
                                         # we sent them all of the file
                                         is_done = True
+                                        self.ParamMgr.Logger.debug(f"file_size_on_disk is done")
 
                                     chunk_data = {'filename': str(filename), 'md5': md5_filename_hash,
-                                                  'file_size': filename_size, 'md5_chunk': md5_chunk,
-                                                  'file_chunk': file_chunk}
+                                                  'file_size': file_size_on_disk, 'md5_chunk': md5_chunk,
+                                                  'file_chunk': text_chunk}
 
                                     chunk_data_len = len(chunk_data)  # don't need this, here just for fun
                                     self.ParamMgr.Logger.debug(  # don't need this, here just for fun
@@ -1888,7 +2050,7 @@ class ScriptEngine:
                                 self.ParamMgr.Logger.error(f"Exception Error: {str(e)}")
 
                             self.ParamMgr.NetworkMgr.send_maintenance_message(
-                                MessageType.MAINTENANCE_REQUEST,
+                                MessageType.MAINTENANCE_RESPONSE,
                                 testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
                                 data=chunk_data)
 
@@ -1898,11 +2060,10 @@ class ScriptEngine:
                 elif testcase_type == TestcaseType.IMG_GET_POS:
                     self.ParamMgr.Logger.info("ScriptEngine.run_maintenance_cmd.IMG_GET_POS")
                     if data_object is not None:
-                        file_exists = False
+                        have_correct_file = False
                         filename = None
                         md5_hash = None
                         variable_name = None
-                        meow = None
 
                         if 'filename' in data_object:
                             filename = data_object['filename']
@@ -1911,36 +2072,40 @@ class ScriptEngine:
                         if 'variable_name' in data_object:
                             variable_name = data_object['variable_name']
 
-                        # first check to see if we have the file
-                        if not os.path.exists(filename):
-                            self.ParamMgr.Logger.warning(f"Warning: img file not found, requesting")
-                            # don't have it, then get it
-                            missing_data = {'filename': filename}
-                            self.send_maintenance_message_wait_response(MessageType.MAINTENANCE_REQUEST,
-                                                                        testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
-                                                                        data=missing_data)
-
-                        # if we have the file, is it the correct file
                         if os.path.exists(filename):
                             md5_hash_on_disk = self.ParamMgr.calculate_md5(filename)
 
-                            md5_hash_on_disk_len = len(md5_hash_on_disk)
-                            md5_hash_len = len(md5_hash)
-
-                            if md5_hash != md5_hash_on_disk:
-                                # bad file, get the correct one
-                                missing_data = {'filename': filename}
-
-                                self.ParamMgr.Logger.warning(
-                                    f"Warning, fetching file from server, filename: {str(filename)}, "
-                                    f"md5 mismatch: actual:{str(md5_hash_on_disk)}, expected: {str(md5_hash)}")
-
+                            if md5_hash == md5_hash_on_disk:
+                                have_correct_file = True
+                            else:
                                 os.remove(filename)  # bad md5 sum, delete it and request new file
 
-                                self.send_maintenance_message_wait_response(MessageType.MAINTENANCE_REQUEST,
-                                                                            testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
-                                                                            data=missing_data)
+                        if not have_correct_file:
+                            # don't have it, then get it
+                            self.ParamMgr.Logger.warning(f"Warning: img file not found, requesting")
+                            file_data = {'filename': filename}
+                            status_is_pass = ResponseStatus.ERRR  # set as error for now
+                            self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_REQUEST,
+                                                                              testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
+                                                                              data=file_data)
 
+                        # we requested the file, not we wait until we get the correct file before we proceed
+                        while not have_correct_file:
+                            while not os.path.exists(filename):
+                                time.sleep(0.1)
+
+                            while not have_correct_file:
+                                if os.path.exists(filename):
+                                    md5_hash_on_disk = self.ParamMgr.calculate_md5(filename)
+
+                                    if md5_hash == md5_hash_on_disk:
+                                        have_correct_file = True
+                                    else:
+                                        time.sleep(0.1)
+
+
+
+                        # if we got here, then have_file should be True
                         if os.path.exists(filename):
                             md5_hash_on_disk = self.ParamMgr.calculate_md5(filename)
 
@@ -1948,7 +2113,7 @@ class ScriptEngine:
                                 # we have the correct file,
                                 try:
                                     cwd = os.getcwd()
-                                    haystack_image = os.path.join(cwd, 'scripts/gnome-calculator.png')
+                                    haystack_image = os.path.join(cwd, '../scripts/gnome-calculator.png')
                                     # needle_image = os.path.join(cwd, 'scripts/gnome-calculator_btn_2.png')
                                     needle_image = filename
                                     point_a = None
@@ -2025,32 +2190,39 @@ class ScriptEngine:
                                             point_a = pyautogui.center(box_b)
                                             self.ParamMgr.Logger.debug(f"location Point: {str(point_a)}")
 
-                                            status_is_pass = True
+                                            status_is_pass = ResponseStatus.PASS
 
                                             # TODO we don't want to click here, click is just during debug
                                             pyautogui.click(point_a.x, point_a.y)
+                                    else:  # not box_a
+                                        status_is_pass = ResponseStatus.ERRR
 
                                     if variable_name is not None and point_a is not None:
                                         self.ParamMgr.set_script_point(variable_name, point_a)
-                                        status_is_pass = True
+                                        status_is_pass = ResponseStatus.PASS
 
                                 except pyautogui.ImageNotFoundException as e:
+                                    status_is_pass = ResponseStatus.EERR
                                     self.ParamMgr.Logger.error(
                                         f"ImageNotFoundException Error, ImageNotFoundException: {str(e)}")
 
                                 except pyautogui.PyAutoGUIException as e:
+                                    status_is_pass = ResponseStatus.EERR
                                     self.ParamMgr.Logger.error(
                                         f"PyAutoGUIException Error, PyAutoGUIException: {str(e)}")
 
                                 except Exception as e:
+                                    status_is_pass = ResponseStatus.EERR
                                     self.ParamMgr.Logger.error(
                                         f"Exception Error, PyAutoGUIException: {str(e)}")
 
                             else:  # md5_hash mismatch
+                                status_is_pass = ResponseStatus.ERRR
                                 self.ParamMgr.Logger.error(
                                     f"Error, MD5 mismatch: actual:{str(md5_hash_on_disk)}, expected: {str(md5_hash)}")
 
                         else:  # not os.path.exists(filename)
+                            status_is_pass = ResponseStatus.ERRR
                             self.ParamMgr.Logger.error(
                                 f"Error, img file not found: {str(filename)}")
 
@@ -2058,8 +2230,64 @@ class ScriptEngine:
                                                                       testcase_type=testcase_type,
                                                                       status_is_pass=status_is_pass)
 
+                elif testcase_type == TestcaseType.GET_FILE_FROM_SERVER:
+                    self.ParamMgr.Logger.info("ScriptEngine.run_maintenance_cmd.GET_FILE_FROM_SERVER")
+                    # Request
+
+                    req_file_data = None
+
+                    if data_object is not None:
+                        filename = None
+                        md5_filename_hash = None
+                        have_file = False
+
+                        if 'filename' in data_object:
+                            filename = data_object['filename']
+                        if 'md5' in data_object:
+                            md5_filename_hash = data_object['md5']
+
+                        if os.path.exists(filename):
+                            md5_filename_received_hash = self.ParamMgr.calculate_md5(filename)
+                            if md5_filename_received_hash == md5_filename_hash:
+                                have_file = True
+
+                        if not have_file:
+                            if os.path.exists(filename):
+                                os.remove(filename)
+
+                            req_file_data = {'filename': str(filename)}
+
+                            self.ParamMgr.NetworkMgr.send_maintenance_message(
+                                MessageType.MAINTENANCE_REQUEST,
+                                testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
+                                data=req_file_data)
+
+                            start_time = datetime.now()
+                            while not have_file:
+                                if os.path.exists(filename):
+                                    md5_filename_received_hash = self.ParamMgr.calculate_md5(filename)
+                                    if md5_filename_received_hash == md5_filename_hash:
+                                        have_file = True
+                                    else:
+                                        time.sleep(0.1)
+                                else:
+                                    time.sleep(0.1)
+                                current_time = datetime.now()
+                                time_difference = current_time - start_time
+                                total_seconds = time_difference.total_seconds()
+                                if total_seconds > self.ParamMgr.client_response_timeout:
+                                    break  # timeout occurred
+
+
+                    self.ParamMgr.NetworkMgr.send_maintenance_message(
+                        MessageType.MAINTENANCE_RESPONSE,
+                        testcase_type=TestcaseType.GET_FILE_FROM_SERVER,
+                        data=None)
+
+
                 else:
-                    self.ParamMgr.Logger.warning(f"Warning, run_maintenance_cmd, not implemented testcase_type: {str(testcase_type)}")
+                    self.ParamMgr.Logger.warning(
+                        f"Warning, run_maintenance_cmd, not implemented testcase_type: {str(testcase_type)}")
 
             except AttributeError as e:
                 self.ParamMgr.Logger.error(f"AttributeError: {str(e)}")
@@ -2081,7 +2309,6 @@ class ScriptEngine:
                 for key, value in data_object.items():
                     self.ParamMgr.Logger.info(f"Response data: {str(key)}, {str(value)}")
 
-            self.ParamMgr.get_client_ledger(peer_info).test_statistics.total_maintenance_count += 1
             if is_pass:
                 self.ParamMgr.get_client_ledger(peer_info).test_statistics.total_maintenance_pass_count += 1
             else:
@@ -2127,17 +2354,18 @@ class ScriptEngine:
                 # Response
 
                 # transfer file, we need to send little pieces of file to build it
-                status_is_pass = False
-                completed_file_save = False
+                status_is_pass = ResponseStatus.NONE
+                completed_file_transfer = False
 
                 if data_object is not None:
                     filename = None
                     md5_filename_hash = None
-                    filename_size = None
+                    file_size = None
                     md5_chunk = None
-                    file_chunk = None
+                    text_chunk = None
                     need_data = None
-                    file_received_current_size = 0
+                    have_bytes = 0
+                    meow = None
 
                     # filename of the file to transfer
                     if 'filename' in data_object:
@@ -2147,29 +2375,33 @@ class ScriptEngine:
                         md5_filename_hash = data_object['md5']
                     # the size of the file in bytes
                     if 'file_size' in data_object:
-                        filename_size = data_object['file_size']
+                        file_size = data_object['file_size']
                     # the md5 sum of the little part of the file that we are sharing
                     if 'md5_chunk' in data_object:
                         md5_chunk = data_object['md5_chunk']
                     # the little part of the file that we are sharing
                     if 'file_chunk' in data_object:
-                        file_chunk = data_object['file_chunk']
+                        text_chunk = data_object['file_chunk']
 
                     if (filename is not None and
                             md5_filename_hash is not None and
-                            filename_size is not None and
+                            file_size is not None and
                             md5_chunk is not None and
-                            file_chunk is not None):
+                            text_chunk is not None):
 
-                        md5_received_chunk = hashlib.md5(file_chunk).hexdigest()
+                        md5_received_chunk = hashlib.md5(text_chunk.encode()).hexdigest()
 
                         if md5_received_chunk == md5_chunk:
+
+                            # convert text back to binary
+                            file_chunk = binascii.a2b_base64(text_chunk.encode())
+
                             try:
                                 file = open(filename, 'ab')  # append mode
                                 file.write(file_chunk)
                                 file.flush()
                                 file.close()
-                                status_is_pass = True  # if we got here, then we are good
+                                status_is_pass = ResponseStatus.PASS  # if we got here, then we are good
                             except PermissionError as e:
                                 self.ParamMgr.Logger.error(f"PermissionError: {str(e)}")
                             except IsADirectoryError as e:
@@ -2185,45 +2417,46 @@ class ScriptEngine:
                             # boo
                             self.ParamMgr.Logger.error(
                                 f"Error, Received MD5 mismatch of chunk: actual:{str(md5_received_chunk)}, "
-                                    f" expected: {str(md5_chunk)}")
+                                f" expected: {str(md5_chunk)}")
                             # TODO chunk data bad md5?? should we count the number of times?
 
                         if os.path.exists(filename):
-                            file_received_current_size = os.path.getsize(filename)
+                            have_bytes = os.path.getsize(filename)
 
-                        if file_received_current_size < filename_size:
+                        if have_bytes < file_size:
                             # need more
-                            self.ParamMgr.Logger.Warning(f"Warning, Need more file: filename: {str(filename)},"
-                                                         f" current file size: {str(file_received_current_size)} "
-                                                         f" of total file size:  {str(filename_size)}")
-                            need_data = {'filename': filename, 'have_bytes': file_received_current_size}
+                            self.ParamMgr.Logger.warning(
+                                f"Warning, FILE_TRANSFER_FROM_SERVER, Need more file: filename: {str(filename)},"
+                                f" current file size: {str(have_bytes)} "
+                                f" of total file size:  {str(file_size)}")
+                            need_data = {'filename': filename, 'have_bytes': have_bytes}
 
-                        elif file_received_current_size == filename_size:
+                        elif have_bytes == file_size:
                             # yay, we are done
 
                             md5_filename_received_hash = self.ParamMgr.calculate_md5(filename)
                             if md5_filename_received_hash == md5_filename_hash:
-                                self.ParamMgr.Logger.debug(f"Completed FILE_TRANSFER_FROM_SERVER: {str(filename)}")
-                                status_is_pass = True  # might already be True, set it here again just to make sure
-                                completed_file_save = True
+                                self.ParamMgr.Logger.debug(
+                                    f"Successful FILE_TRANSFER_FROM_SERVER: filename: {str(filename)}")
+                                status_is_pass = ResponseStatus.PASS  # might already be True, set it here again just to make sure
+                                completed_file_transfer = True
                             else:
                                 self.ParamMgr.Logger.error(f"Error, Saved MD5 mismatch: "
                                                            f" actual:{str(md5_filename_received_hash)},"
                                                            f" expected: {str(md5_filename_hash)}")
-                        elif file_received_current_size > filename_size:
-                            self.ParamMgr.Logger.error(f"Error, Saved file larger than expected: "
-                                                           f" actual:{str(file_received_current_size)},"
-                                                           f" expected: {str(filename_size)}")
                         else:
-                            self.ParamMgr.Logger.Warning(f"what else could go wrong will go wrong")
+                            self.ParamMgr.Logger.error(f"Error, Saved file larger than expected: "
+                                                       f" actual:{str(have_bytes)},"
+                                                       f" expected: {str(file_size)}")
 
-                        if completed_file_save is not True:  # not true means we need more
+                        if completed_file_transfer is not True:  # not true means we need more
                             self.ParamMgr.NetworkMgr.send_maintenance_message(MessageType.MAINTENANCE_REQUEST,
-                                    testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
-                                    data=need_data)
+                                                                              testcase_type=TestcaseType.FILE_TRANSFER_FROM_SERVER,
+                                                                              data=need_data)
 
             #######################################################
             # now that I am done processing the message, now I can trigger the response to go to the next step
+            # this will response to all message_types
             self.ParamMgr.client_attendance.add_client_response(peer_info, message_type=message_type,
                                                                 testcase_type=testcase_type)
 
